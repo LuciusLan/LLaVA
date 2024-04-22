@@ -54,6 +54,33 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
     def get_model(self):
         return self.model
 
+    def get_img_emb_split_pos(self,                
+                input_ids,
+                position_ids=None,
+                attention_mask=None,
+                past_key_values=None,
+                labels=None,
+                images=None,
+                image_sizes=None):
+        (
+            input_ids,
+            position_ids,
+            attention_mask,
+            past_key_values,
+            inputs_embeds,
+            labels,
+            split_sizes
+            ) = self.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                labels,
+                images,
+                image_sizes
+            )
+        return split_sizes
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -69,8 +96,7 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-
-        if inputs_embeds is None:
+        if images is None or input_ids.shape[1] == 1:
             (
                 input_ids,
                 position_ids,
@@ -78,6 +104,24 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
                 past_key_values,
                 inputs_embeds,
                 labels
+            ) = self.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                labels,
+                images,
+                image_sizes
+            )
+        elif inputs_embeds is None:
+            (
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                inputs_embeds,
+                labels,
+                split_sizes
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 position_ids,
@@ -121,7 +165,8 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
                 attention_mask,
                 _,
                 inputs_embeds,
-                _
+                _,
+                split_sizes
             ) = self.prepare_inputs_labels_for_multimodal(
                 inputs,
                 position_ids,
