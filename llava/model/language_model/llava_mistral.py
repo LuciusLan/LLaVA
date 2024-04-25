@@ -97,7 +97,7 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        if images is None or input_ids.shape[1] == 1:
+        if (images is None or input_ids.shape[1] == 1) and inputs_embeds is None:
             (
                 input_ids,
                 position_ids,

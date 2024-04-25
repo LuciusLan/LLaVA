@@ -1,8 +1,8 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
-os.environ['HF_HOME'] = '/home/wuyin/huggingface_cache/'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['HF_HOME'] = '/home/wuyin/hf_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
 import json
@@ -16,7 +16,7 @@ from PIL import Image
 import numpy as np
 import spacy
 #spacy.prefer_gpu()
-nlp = spacy.load('en_core_web_sm')
+nlp = spacy.load('en_core_web_trf')
 
 
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
@@ -28,7 +28,7 @@ from chair_runtime import CHAIR
 
 
 
-chair_evaluator = pickle.load(open('./chair.pkl', 'rb'))
+chair_evaluator = pickle.load(open('./data/chair.pkl', 'rb'))
 
 def get_object_words(self, caption, image_id):
     words, node_words, idxs = self.caption_to_words_with_l(caption)
@@ -142,6 +142,9 @@ def eval_model(args):
     answers_file = os.path.expanduser(args.answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
     ans_file = open(answers_file, "w")
+
+
+    attn_all_gen, attn_hallu, attn_tp  = []
     for line in tqdm(questions):
         idx = line["question_id"]
         image_file = line["image"]
@@ -162,7 +165,7 @@ def eval_model(args):
         image = Image.open(os.path.join(args.image_folder, image_file)).convert('RGB')
         image_tensor = process_images([image], image_processor, model.config)[0]
 
-        with torch.inference_mode(): #这尼玛怎么是 ids a 
+        with torch.inference_mode():
             
             output_ids = model.generate(
                 input_ids,
@@ -208,12 +211,18 @@ def eval_model(args):
         sp = nlp(outputs)
         words = [t.text for t in sp.doc]
         pos_map = llm_to_sp_pos_map(output_ids.sequences.cpu()[0], words, tokenizer)
-        target_region = get_llm_pos_from_obj(tp_pos[1], pos_map)
+        target_regions_tp = [get_llm_pos_from_obj(e, pos_map) for e in tp_pos]
+        target_regions_hallu = [get_llm_pos_from_obj(e, pos_map) for e in hallu_pos]
 
 
-        attentions = [attn_layer.detach().cpu().squeeze(0).mean(1).numpy() for attn_token in attentions for attn_layer in attn_token]
-        get_saliency(attentions)
+        attentions = [[attn_layer.detach().cpu().squeeze(0).mean(0).numpy() for attn_layer in attn_token] for attn_token in attentions]
+        attn_tp.append(get_saliency(attentions, split_sizes, img_emb_len, target_regions_tp))
+        attn_hallu.append(get_saliency(attentions, split_sizes, img_emb_len, target_regions_hallu))
+        attn_all_gen.append(get_saliency(attentions, split_sizes, img_emb_len, [[1,-1]]))
         print()
+    with open('temp_attn_result', 'wb') as f:
+        pickle.dump([attn_tp, attn_hallu, attn_all_gen], f)
+    f.close()
     ans_file.close()
 
 def get_saliency(attentions, split_sizes, img_emb_len, target_regions):
@@ -226,11 +235,11 @@ def get_saliency(attentions, split_sizes, img_emb_len, target_regions):
     for region in target_regions:
         # Tuple of len region length (Tuple of num_layers)
         # (generated_length, sequence_length)
-        area_of_interst = attentions[region[0]:region[0]+region[1]]
+        area_of_interst = attentions[region[0]:region[1]]
         for i, area in enumerate(area_of_interst):
             area = np.stack(area)
-            instruction_to_output.append(area[:, -1-i:-1, img_token_end-1:instruction_end-1])
-            img_emb_to_output.append(area[:, -1-i:-1, sys_message_end-1:img_token_end-1])
+            instruction_to_output.append(area[:, 0, img_token_end-1:instruction_end-1])
+            img_emb_to_output.append(area[:, 0, sys_message_end-1:img_token_end-1])
 
     return instruction_to_output, img_emb_to_output
 

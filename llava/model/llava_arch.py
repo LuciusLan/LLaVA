@@ -201,7 +201,7 @@ class LlavaMetaForCausalLM(ABC):
         else:
             image_features = self.encode_images(images)
         
-        img_emb_len = image_features.size(1)
+        img_emb_len = image_features[0].size(0)
         # TODO: image start / end is not implemented here to support pretraining.
         if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
             raise NotImplementedError
