@@ -14,7 +14,7 @@ Modified by: Maxlinn
 import os
 import sys
 import spacy
-#spacy.prefer_gpu()
+spacy.prefer_gpu(1)
 nlp = spacy.load('en_core_web_trf')
 import json
 # from pattern.en import singularize

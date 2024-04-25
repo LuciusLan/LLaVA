@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 import numpy as np
 import spacy
-#spacy.prefer_gpu()
+spacy.prefer_gpu(1)
 nlp = spacy.load('en_core_web_trf')
 
 
@@ -238,7 +238,10 @@ def get_saliency(attentions, split_sizes, img_emb_len, target_regions):
     for region in target_regions:
         # Tuple of len region length (Tuple of num_layers)
         # (generated_length, sequence_length)
-        area_of_interst = attentions[region[0]:region[1]]
+        if len(region) == 1:
+            area_of_interst = attentions[region[0]]
+        else:
+            area_of_interst = attentions[region[0]:region[1]]
         for i, area in enumerate(area_of_interst):
             area = np.stack(area)
             instruction_to_output.append(area[:, 0, img_token_end-1:instruction_end-1])
