@@ -1,13 +1,14 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ['HF_HOME'] = '/home/wuyin/hf_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
 import json
 import pickle
 from typing import Any
+import gc
 
 from tqdm import tqdm
 #import shortuuid
@@ -144,7 +145,7 @@ def eval_model(args):
     ans_file = open(answers_file, "w")
 
 
-    attn_all_gen, attn_hallu, attn_tp  = []
+    attn_all_gen, attn_hallu, attn_tp  = [], [] ,[]
     for line in tqdm(questions):
         idx = line["question_id"]
         image_file = line["image"]
@@ -219,7 +220,9 @@ def eval_model(args):
         attn_tp.append(get_saliency(attentions, split_sizes, img_emb_len, target_regions_tp))
         attn_hallu.append(get_saliency(attentions, split_sizes, img_emb_len, target_regions_hallu))
         attn_all_gen.append(get_saliency(attentions, split_sizes, img_emb_len, [[1,-1]]))
-        print()
+        del output_ids
+        torch.cuda.empty_cache()
+        gc.collect()
     with open('temp_attn_result', 'wb') as f:
         pickle.dump([attn_tp, attn_hallu, attn_all_gen], f)
     f.close()
@@ -252,11 +255,10 @@ def get_llm_pos_from_obj(obj_pos, pos_map):
         if pos == 1:
             counter_lm += 1
         if counter_lm == obj_pos[0] and not flag:
-            # i+1 because of bos token
-            temp.append(i+1)
+            temp.append(i)
             flag = True
         if counter_lm == obj_pos[0]+obj_pos[1]:
-            temp.append(i+1)
+            temp.append(i)
             break
     return temp
 
@@ -266,8 +268,10 @@ def llm_to_sp_pos_map(output_ids, output_text, tokenizer):
         output_ids is following LLM's tokenization (subword level)
     """
     output_subwords = tokenizer.convert_ids_to_tokens(output_ids)
-    output_subwords.remove(tokenizer.eos_token)
-    output_subwords.remove(tokenizer.bos_token)
+    try:
+        output_subwords.remove(tokenizer.eos_token)
+    except:
+        pass
     llm_to_spacy_map = []
     temp = ''
     sp_flag = False
