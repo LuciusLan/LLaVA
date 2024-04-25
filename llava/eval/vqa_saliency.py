@@ -1,13 +1,14 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ['HF_HOME'] = '/home/wuyin/huggingface_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
 import json
 import pickle
 from typing import Any
+import gc
 
 from tqdm import tqdm
 #import shortuuid
@@ -26,6 +27,8 @@ from llava.conversation import conv_templates, SeparatorStyle
 from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
+#from llava.grad_analysis import start_save, end_save, get_result, add_activation, add_activation_grad
+
 
 
 def split_list(lst, n):
@@ -51,13 +54,16 @@ def eval_model(args):
     loss_fn = CrossEntropyLoss()
     
     # MODEL:
-    print(model)
+    #print(model)
+    for p in model.parameters():
+        p.requires_grad = False
     questions = [json.loads(q) for q in open(os.path.expanduser(args.question_file), "r")]
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
 
     saliency_scores = []
 
     for i_img, line in enumerate(tqdm(questions)):
+        current_saliency = []
         idx = line["question_id"]
         image_file = line["image"]
         qs = line["text"]
@@ -77,7 +83,7 @@ def eval_model(args):
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
 
         image = Image.open(os.path.join(args.image_folder, image_file)).convert('RGB')
-        image_tensor = process_images([image], image_processor, model.config)[0]
+        image_tensor = process_images([image], image_processor, model.config)[0].half()
 
         with torch.inference_mode():
             
@@ -99,16 +105,17 @@ def eval_model(args):
 
             logits = model.forward(
                 input_ids,
-                images=image_tensor.unsqueeze(0).half().cuda(),
+                images=image_tensor.unsqueeze(0).cuda(),
                 image_sizes=[image.size],
                 output_attentions=True,
                 return_dict=True)
 
-            split_sizes = model.get_img_emb_split_pos(input_ids, images=image_tensor.unsqueeze(0).half().cuda(), image_sizes=[image.size])
+            split_sizes, img_emb_len = model.get_img_emb_split_pos(input_ids, images=image_tensor.unsqueeze(0).half().cuda(), image_sizes=[image.size])
         # CQ: add for attention map
         #print(output_ids.keys())
         next_word_logit = logits.logits[0, -1]
         attentions = logits.attentions
+        del logits
         # attentions is a tuple where each item represents the attention weights from a layer
         #print(f"Type of attentions object: {type(attentions)}")
         #print(f"Number of sequence: {len(attentions)}")
@@ -134,29 +141,31 @@ def eval_model(args):
         label_set = [label, label[0].upper()+label[1:], label]
         label_set = [torch.LongTensor(tokenizer.encode(lab)[1:]).to(next_word_logit.device) for lab in label_set]
 
-        loss_set = [loss_fn(next_word_logit, lab) for lab in label_set]
-        min_loss = loss_set.min()
-        min_loss.backward()
-
-        attentions = [attn.grad() for attn in attentions]
+        #loss_set = [loss_fn(next_word_logit.unsqueeze(0), lab) for lab in label_set]
+        #min_loss = min(loss_set)
+        #min_loss.backward()
+        #attentions = [attn.grad() for attn in attentions]
         attentions = [attn.squeeze(0).mean(0) for attn in attentions]
         
         for i in range(32):
-            saliency_scores.append([get_saliency(attentions[i], split_sizes), outputs.lower()==label])
+            current_saliency.append([get_saliency(attentions[i], split_sizes), outputs.lower()==label])
+        saliency_scores.append(current_saliency)
 
-        if i_img == 100:
-            with open('saliency_scores.bin', 'wb') as f:
-                pickle.dump(saliency_scores, f)
-            f.close()
-            break
+            
+
+        del attentions
+        torch.cuda.empty_cache()
+        gc.collect()
+    with open('saliency_scores.bin', 'wb') as f:
+        pickle.dump(saliency_scores, f)
+        f.close()
     #ans_file.close()
 
 def get_saliency(attention_mat, split_sizes):
-    attention_mat = attention_mat.detach().cpu().clone()
-    attention_mat = attention_mat.numpy()
+    attention_mat = attention_mat.detach().cpu().clone().numpy()
     np.fill_diagonal(attention_mat, 0)
-    instruction_to_output = attention_mat[-split_sizes[1]-1:-1, -1]
-    img_emb_to_output = attention_mat[split_sizes[0]-1:-split_sizes[1]-1, -1]
+    instruction_to_output = attention_mat[-1,-split_sizes[1]-1:-1]
+    img_emb_to_output = attention_mat[-1, split_sizes[0]-1:-split_sizes[1]-1]
 
     return instruction_to_output, img_emb_to_output
 

@@ -69,7 +69,8 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
             past_key_values,
             inputs_embeds,
             labels,
-            split_sizes
+            split_sizes,
+            img_emb_len
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 position_ids,
@@ -79,7 +80,7 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
                 images,
                 image_sizes
             )
-        return split_sizes
+        return split_sizes, img_emb_len
 
     def forward(
         self,
@@ -121,7 +122,8 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
                 past_key_values,
                 inputs_embeds,
                 labels,
-                split_sizes
+                split_sizes,
+                img_emb_len
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 position_ids,
@@ -166,7 +168,8 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
                 _,
                 inputs_embeds,
                 _,
-                split_sizes
+                split_sizes,
+                img_emb_len
             ) = self.prepare_inputs_labels_for_multimodal(
                 inputs,
                 position_ids,
