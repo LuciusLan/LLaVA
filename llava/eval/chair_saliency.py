@@ -1,7 +1,7 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 os.environ['HF_HOME'] = '/home/wuyin/hf_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 import numpy as np
 import spacy
-spacy.prefer_gpu(1)
+spacy.prefer_gpu()
 nlp = spacy.load('en_core_web_trf')
 
 
@@ -146,7 +146,7 @@ def eval_model(args):
 
 
     attn_all_gen, attn_hallu, attn_tp  = [], [] ,[]
-    for line in tqdm(questions):
+    for j, line in enumerate(tqdm(questions)):
         idx = line["question_id"]
         image_file = line["image"]
         qs = line["text"]
@@ -281,9 +281,15 @@ def llm_to_sp_pos_map(output_ids, output_text, tokenizer):
     sp_count = 0
     prev = ''
     for i, subword in enumerate(output_subwords):
+        if subword == '<0x0A>':
+            subword = '\n'
+        if subword.startswith('<'):
+            print(f'Special character {subword}')
         if i == 0:
             if subword.startswith('▁') and subword != '▁':
                 prev = subword[1:]
+            elif subword == '<s>':
+                prev = ''
             else:
                 raise AttributeError("First token not being start of new word")
             continue
