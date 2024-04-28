@@ -1,7 +1,7 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 os.environ['HF_HOME'] = '/home/wuyin/hf_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 import numpy as np
 import spacy
-spacy.prefer_gpu(1)
+spacy.prefer_gpu()
 nlp = spacy.load('en_core_web_trf')
 from knockknock import teams_sender
 
