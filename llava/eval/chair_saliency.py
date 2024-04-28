@@ -18,6 +18,7 @@ import numpy as np
 import spacy
 spacy.prefer_gpu(1)
 nlp = spacy.load('en_core_web_trf')
+from knockknock import teams_sender
 
 
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
@@ -125,7 +126,7 @@ def get_chunk(lst, n, k):
     chunks = split_list(lst, n)
     return chunks[k]
 
-
+@teams_sender(webhook_url="")
 def eval_model(args):
     # Model
     disable_torch_init()
@@ -146,7 +147,7 @@ def eval_model(args):
 
 
     attn_all_gen, attn_hallu, attn_tp  = [], [] ,[]
-    for line in tqdm(questions):
+    for j, line in enumerate(tqdm(questions)):
         idx = line["question_id"]
         image_file = line["image"]
         qs = line["text"]
@@ -239,7 +240,7 @@ def get_saliency(attentions, split_sizes, img_emb_len, target_regions):
         # Tuple of len region length (Tuple of num_layers)
         # (generated_length, sequence_length)
         if len(region) == 1:
-            area_of_interst = attentions[region[0]]
+            area_of_interst = attentions[region[0]:region[0]+1]
         else:
             area_of_interst = attentions[region[0]:region[1]]
         for i, area in enumerate(area_of_interst):
@@ -263,6 +264,8 @@ def get_llm_pos_from_obj(obj_pos, pos_map):
         if counter_lm == obj_pos[0]+obj_pos[1]:
             temp.append(i)
             break
+    if len(temp) == 0:
+        print()
     return temp
 
 def llm_to_sp_pos_map(output_ids, output_text, tokenizer):
@@ -281,9 +284,15 @@ def llm_to_sp_pos_map(output_ids, output_text, tokenizer):
     sp_count = 0
     prev = ''
     for i, subword in enumerate(output_subwords):
+        if subword == '<0x0A>':
+            subword = '\n'
+        if subword.startswith('<'):
+            print(f'Special character {subword}')
         if i == 0:
             if subword.startswith('▁') and subword != '▁':
                 prev = subword[1:]
+            elif subword == '<s>':
+                prev = ''
             else:
                 raise AttributeError("First token not being start of new word")
             continue
