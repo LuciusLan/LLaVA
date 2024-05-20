@@ -1,7 +1,7 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 os.environ['HF_HOME'] = '/home/wuyin/hf_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
@@ -42,7 +42,8 @@ def eval_model(args):
         questions = f.readlines()
         questions = [json.loads(e) for e in questions]
 
-    question_texts = [e['question']['question'] for e in questions]
+    #question_texts = ['[INST]Please answer the question. Give your answer with the keyword(s) only, as short as possible.\n' + e['question']['question'] + ' Answer:[/INST]' for e in questions]
+    question_texts = ['[INST]' + e['question']['question'] + '[/INST]' for e in questions]
     question_ids = tokenizer(question_texts, padding='longest', return_tensors='pt')
     index = torch.LongTensor(np.arange(len(questions))).unsqueeze(1)
 
@@ -50,6 +51,7 @@ def eval_model(args):
     ds = TensorDataset(question_ids.input_ids, question_ids.attention_mask, index)
     dl = DataLoader(ds, batch_size=8)
     output_probs = []
+    
     for batch in tqdm(dl, total=(len(dl))):
         input_ids, attention_mask, index = batch
         input_ids = input_ids.cuda()
@@ -72,19 +74,19 @@ def eval_model(args):
                 return_dict_in_generate=True,# CQ: add for attention map
             )
         
-        #t = [e[0] for e in output_ids.scores]
-        #p =  F.softmax(t[6], dim=0)
-        #top10 = torch.argsort(t[6], 0, descending=True)[:10]
-        #p[top10]
 
-        transition_scores = model.compute_transition_scores(
-            output_ids.sequences, output_ids.scores, normalize_logits=True
-        )
+
+        #transition_scores = model.compute_transition_scores(output_ids.sequences, output_ids.scores, normalize_logits=True)
 
         bs = input_ids.size(0)
-        
+        stack_score = torch.stack(output_ids.scores, dim=1)
         for i in range(bs):
-            output_probs.append([(tokenizer.decode(tok), np.exp(score.cpu().numpy())) for tok, score in zip(output_ids.sequences[i], transition_scores[i])])
+            t = stack_score[i,:,:]
+            p =  F.softmax(t, dim=-1)
+            top10 = torch.argsort(t, 1, descending=True)[:, :10]
+            p_top10 = [tok_p[top10_id] for tok_p, top10_id in zip(p, top10)]
+            p_top10 = torch.stack(p_top10, 0)
+            output_probs.append([(tokenizer.decode(tok), probs, ids) for tok, probs, ids in zip(output_ids.sequences[i], p_top10, top10)])
 
     with open('output_scores.bin', 'wb') as f:
         pickle.dump(output_probs, f)
