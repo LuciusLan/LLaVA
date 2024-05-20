@@ -1,8 +1,8 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
-os.environ['HF_HOME'] = '/home/wuyin/huggingface_cache/'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['HF_HOME'] = '/home/wuyin/hf_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
 import json
@@ -30,6 +30,8 @@ from llava.mm_utils import tokenizer_image_token, process_images, get_model_name
 #from llava.grad_analysis import start_save, end_save, get_result, add_activation, add_activation_grad
 
 
+SAVE_INTERVAL = 50
+
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -41,6 +43,21 @@ def get_chunk(lst, n, k):
     chunks = split_list(lst, n)
     return chunks[k]
 
+def register_attn_layers(model, attn_weight_by_layer):
+    def forward_hook(module, inputs, output):
+        output[1].retain_grad()
+        attn_weight_by_layer.append(output[1])
+
+    handles = [layer.self_attn.register_forward_hook(forward_hook) for layer in model.model.layers]
+    return handles
+
+def register_attn_layer_gradient(model, grad_list):
+    def hook_layers(module, grad_in, grad_out):
+        grad_list.append(grad_out[0].detach().cpu().numpy())
+    
+    hooks = [layer.self_attn.register_full_backward_hook(hook_layers) for layer in model.model.layers]
+    return hooks
+
 
 def eval_model(args):
     # Model
@@ -49,27 +66,25 @@ def eval_model(args):
     model_name = get_model_name_from_path(model_path)
     #CQ: change for attention map, need eager not sdpa
     # tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name, attn_implementation="eager", output_attentions=True) # CQ: add for attention map
-    
+    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name, attn_implementation="eager", output_attentions=True, device='cpu') # CQ: add for attention map
+    model = model.to(torch.float32)
     loss_fn = CrossEntropyLoss()
     
     # MODEL:
-    #print(model)
-    for p in model.parameters():
-        p.requires_grad = False
+    print(model)
+    #for p in model.parameters():
+    #    p.requires_grad = False
     questions = [json.loads(q) for q in open(os.path.expanduser(args.question_file), "r")]
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
 
     saliency_scores = []
-
+    out_file =  open('saliency_score.jsonl', 'w')
     for i_img, line in enumerate(tqdm(questions)):
-        current_saliency = []
-        idx = line["question_id"]
-        image_file = line["image"]
-        qs = line["text"]
-        label = line["label"]
-        cur_prompt = qs
-        qs += " Please answer with \"yes\" or \"no\"."
+        idx = line['question']['question_id']
+        image_id = line['question']['image_id']
+        label = line['answer']['multiple_choice_answer']
+
+        qs = f"Please answer the question. Give your answer with the answer keyword(s) only, make it concise but accurate.\nQuestion:{line['question']['question']}\nAnswer:"
         if model.config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
@@ -80,52 +95,82 @@ def eval_model(args):
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
 
-        input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
+        input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0)#.cuda()
+        question_len = len(tokenizer.encode(line['question']['question'])) -1
+        question_pos = len(input_ids[0]) - 8 - question_len # -8 for "\nAnswer:[\INST]" have length 8
 
+        image_file = "COCO_val2014_" + "0"*(12-len(str(image_id))) + str(image_id) + ".jpg"
+        
         image = Image.open(os.path.join(args.image_folder, image_file)).convert('RGB')
-        image_tensor = process_images([image], image_processor, model.config)[0].half()
+        image_tensor = process_images([image], image_processor, model.config)[0] #.half()
 
-        with torch.inference_mode():
-            
-            '''output_ids = model.generate(
-                input_ids,
-                images=image_tensor.unsqueeze(0).half().cuda(),
-                image_sizes=[image.size],
-                do_sample=True if args.temperature > 0 else False,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                num_beams=args.num_beams,
-                # no_repeat_ngram_size=3,
-                max_new_tokens=1024,
-                use_cache=True,
-                output_attentions=True,
-                output_scores=False,
-                return_dict_in_generate=True,# CQ: add for attention map
-            )'''
+        #with torch.inference_mode():
+        torch.enable_grad()
+        model.eval()
+        '''output_ids = model.generate(
+            input_ids,
+            images=image_tensor.unsqueeze(0).half().cuda(),
+            image_sizes=[image.size],
+            do_sample=True if args.temperature > 0 else False,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            num_beams=args.num_beams,
+            # no_repeat_ngram_size=3,
+            max_new_tokens=1024,
+            use_cache=True,
+            output_attentions=True,
+            output_scores=False,
+            return_dict_in_generate=True,# CQ: add for attention map
+        )'''
 
-            logits = model.forward(
-                input_ids,
-                images=image_tensor.unsqueeze(0).cuda(),
-                image_sizes=[image.size],
-                output_attentions=True,
-                return_dict=True)
+        attn_weight_list = []
+        attn_out_grad_list = []
 
-            split_sizes, img_emb_len = model.get_img_emb_split_pos(input_ids, images=image_tensor.unsqueeze(0).half().cuda(), image_sizes=[image.size])
-        # CQ: add for attention map
-        #print(output_ids.keys())
+        handles = register_attn_layers(model, attn_weight_list)
+        hooks = register_attn_layer_gradient(model, attn_out_grad_list)
+
+        model.zero_grad()
+
+        logits = model.forward(
+            input_ids,
+            images=image_tensor.unsqueeze(0),#.cuda(),
+            image_sizes=[image.size],
+            output_attentions=True,
+            return_dict=True)
+
+        
+
+        # output_ids = model.generate(
+        #         input_ids,
+        #         attention_mask=None,
+        #         images=image_tensor.unsqueeze(0),
+        #         image_sizes=[image.size],
+        #         do_sample=True if args.temperature > 0 else False,
+        #         temperature=args.temperature,
+        #         top_p=args.top_p,
+        #         num_beams=args.num_beams,
+        #         # no_repeat_ngram_size=3,
+        #         max_new_tokens=1024,
+        #         output_scores=True,
+        #         use_cache=True,
+        #         return_dict_in_generate=True,# CQ: add for attention map
+        #     )
+
+        #split_sizes, img_emb_len = model.get_img_emb_split_pos(input_ids, images=image_tensor.unsqueeze(0).half().cuda(), image_sizes=[image.size])
+        split_sizes, img_emb_len = model.get_img_emb_split_pos(input_ids, images=image_tensor.unsqueeze(0), image_sizes=[image.size])
+
         next_word_logit = logits.logits[0, -1]
-        attentions = logits.attentions
+        outputs = tokenizer.decode(next_word_logit.argmax())
+        gt_id = tokenizer(label).input_ids[1]
         del logits
         # attentions is a tuple where each item represents the attention weights from a layer
-        #print(f"Type of attentions object: {type(attentions)}")
-        #print(f"Number of sequence: {len(attentions)}")
+        # print(f"Type of attentions object: {type(attentions)}")
+        # print(f"Number of sequence: {len(attentions)}")
         # Example: Access the attention weights of the first layer
-        #for i  in attentions:
+        # for i  in attentions:
         #    print(len(i))
         #    print(i[0].shape)
-        ##
 
-        outputs = tokenizer.decode(next_word_logit.argmax())
         '''ans_id = shortuuid.uuid()
         ans_file.write(json.dumps({"image_id": image_file,
                                     "question_id": idx,
@@ -135,37 +180,48 @@ def eval_model(args):
                                    "model_id": model_name,
                                    "metadata": {}}) + "\n")
         ans_file.flush()'''
-        image_id = image_file.replace("COCO_val2014_", "").replace(".jpg", "")
-        image_id = int(image_id)
 
-        label_set = [label, label[0].upper()+label[1:], label]
-        label_set = [torch.LongTensor(tokenizer.encode(lab)[1:]).to(next_word_logit.device) for lab in label_set]
+        label_set = [label, label[0].upper()+label[1:]]
+        # Only looking at first decoded token, could be a subword (e.g. "bl" in "blonde")
+        label_set = [torch.LongTensor([tokenizer.encode(lab)[1]]).to(next_word_logit.device) for lab in label_set]
 
-        #loss_set = [loss_fn(next_word_logit.unsqueeze(0), lab) for lab in label_set]
-        #min_loss = min(loss_set)
-        #min_loss.backward()
-        #attentions = [attn.grad() for attn in attentions]
-        attentions = [attn.squeeze(0).mean(0) for attn in attentions]
-        
+        loss_set = [loss_fn(next_word_logit.unsqueeze(0), lab) for lab in label_set]
+        min_loss = min(loss_set)
+        min_loss.backward()
+        #next_word_logit[gt_id].backward()
+        [h.remove() for h in handles]
+        [h.remove() for h in hooks]
+
+        saliency = [attn_weight_list[i] * attn_weight_list[i].grad for i in range(len(attn_weight_list))]
+        saliency = [e.detach().squeeze(0).mean(dim=0).cpu().clone().numpy() for e in saliency]
+        pred_prob = next_word_logit.softmax(0)[next_word_logit.argmax()].detach().cpu().tolist()
+        current_saliency = {}
+        q2o = []
+        img2o = []
         for i in range(32):
-            current_saliency.append([get_saliency(attentions[i], split_sizes), outputs.lower()==label])
-        saliency_scores.append(current_saliency)
-
-            
-
-        del attentions
+            temp = get_saliency(saliency[i], split_sizes, img_emb_len, question_len)
+            q2o.append(temp[0].mean().tolist())
+            img2o.append( temp[1].mean().tolist())
+        current_saliency = {'qid': str(idx), 'pred': outputs, 'pred_prob': pred_prob, 'gt': label, 'ques2out': q2o, 'img2out': img2o}
+        #saliency_scores.append(current_saliency)
+        out_file.write(json.dumps(current_saliency))
+        out_file.write('\n')
+        del saliency
         torch.cuda.empty_cache()
         gc.collect()
-    with open('saliency_scores.bin', 'wb') as f:
-        pickle.dump(saliency_scores, f)
-        f.close()
-    #ans_file.close()
 
-def get_saliency(attention_mat, split_sizes):
-    attention_mat = attention_mat.detach().cpu().clone().numpy()
+        # if i % SAVE_INTERVAL == 0:
+        #     with open('saliency_scores.bin', 'wb') as f:
+        #         pickle.dump(saliency_scores, f)
+        #         f.close()
+    out_file.close()
+
+def get_saliency(attention_mat, split_sizes, img_emb_len, question_len):
     np.fill_diagonal(attention_mat, 0)
-    instruction_to_output = attention_mat[-1,-split_sizes[1]-1:-1]
-    img_emb_to_output = attention_mat[-1, split_sizes[0]-1:-split_sizes[1]-1]
+    instruction_to_output = attention_mat[-1,-8-question_len:-8]
+
+    # 5 for [INST] at begining
+    img_emb_to_output = attention_mat[-1, 5-1:5+img_emb_len-1]
 
     return instruction_to_output, img_emb_to_output
 
