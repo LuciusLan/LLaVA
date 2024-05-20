@@ -1,7 +1,7 @@
 import argparse
 import math
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 os.environ['HF_HOME'] = '/home/wuyin/hf_cache/'
 import sys
 sys.path.insert(1, os.getcwd())
@@ -78,9 +78,8 @@ def eval_model(args):
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
 
     saliency_scores = []
-
+    out_file =  open('saliency_score.jsonl', 'w')
     for i_img, line in enumerate(tqdm(questions)):
-        current_saliency = []
         idx = line['question']['question_id']
         image_id = line['question']['image_id']
         label = line['answer']['multiple_choice_answer']
@@ -97,6 +96,8 @@ def eval_model(args):
         prompt = conv.get_prompt()
 
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0)#.cuda()
+        question_len = len(tokenizer.encode(line['question']['question'])) -1
+        question_pos = len(input_ids[0]) - 8 - question_len # -8 for "\nAnswer:[\INST]" have length 8
 
         image_file = "COCO_val2014_" + "0"*(12-len(str(image_id))) + str(image_id) + ".jpg"
         
@@ -134,7 +135,7 @@ def eval_model(args):
             input_ids,
             images=image_tensor.unsqueeze(0),#.cuda(),
             image_sizes=[image.size],
-            output_attentions=False,
+            output_attentions=True,
             return_dict=True)
 
         
@@ -180,38 +181,47 @@ def eval_model(args):
                                    "metadata": {}}) + "\n")
         ans_file.flush()'''
 
-        label_set = [label, label[0].upper()+label[1:], label]
-        label_set = [torch.LongTensor(tokenizer.encode(lab)[1:]).to(next_word_logit.device) for lab in label_set]
+        label_set = [label, label[0].upper()+label[1:]]
+        # Only looking at first decoded token, could be a subword (e.g. "bl" in "blonde")
+        label_set = [torch.LongTensor([tokenizer.encode(lab)[1]]).to(next_word_logit.device) for lab in label_set]
 
-        #loss_set = [loss_fn(next_word_logit.unsqueeze(0), lab) for lab in label_set]
-        #min_loss = min(loss_set)
-        #min_loss.backward()
+        loss_set = [loss_fn(next_word_logit.unsqueeze(0), lab) for lab in label_set]
+        min_loss = min(loss_set)
+        min_loss.backward()
         #next_word_logit[gt_id].backward()
         [h.remove() for h in handles]
         [h.remove() for h in hooks]
 
-        saliency = attn_weight_list[0] * attn_weight_list[0].grad
-        saliency = saliency.detach().cpu().clone().numpy()
-        
+        saliency = [attn_weight_list[i] * attn_weight_list[i].grad for i in range(len(attn_weight_list))]
+        saliency = [e.detach().squeeze(0).mean(dim=0).cpu().clone().numpy() for e in saliency]
+        pred_prob = next_word_logit.softmax(0)[next_word_logit.argmax()].detach().cpu().tolist()
+        current_saliency = {}
+        q2o = []
+        img2o = []
         for i in range(32):
-            current_saliency.append([get_saliency(saliency[i], split_sizes), outputs, label])
-        saliency_scores.append(current_saliency)
-
+            temp = get_saliency(saliency[i], split_sizes, img_emb_len, question_len)
+            q2o.append(temp[0].mean().tolist())
+            img2o.append( temp[1].mean().tolist())
+        current_saliency = {'qid': str(idx), 'pred': outputs, 'pred_prob': pred_prob, 'gt': label, 'ques2out': q2o, 'img2out': img2o}
+        #saliency_scores.append(current_saliency)
+        out_file.write(json.dumps(current_saliency))
+        out_file.write('\n')
         del saliency
         torch.cuda.empty_cache()
         gc.collect()
 
-        if i % SAVE_INTERVAL == 0:
-            with open('saliency_scores.bin', 'wb') as f:
-                pickle.dump(saliency_scores, f)
-                f.close()
-    #ans_file.close()
+        # if i % SAVE_INTERVAL == 0:
+        #     with open('saliency_scores.bin', 'wb') as f:
+        #         pickle.dump(saliency_scores, f)
+        #         f.close()
+    out_file.close()
 
-def get_saliency(attention_mat, split_sizes):
-    attention_mat = attention_mat
+def get_saliency(attention_mat, split_sizes, img_emb_len, question_len):
     np.fill_diagonal(attention_mat, 0)
-    instruction_to_output = attention_mat[-1,-split_sizes[1]-1:-1]
-    img_emb_to_output = attention_mat[-1, split_sizes[0]-1:-split_sizes[1]-1]
+    instruction_to_output = attention_mat[-1,-8-question_len:-8]
+
+    # 5 for [INST] at begining
+    img_emb_to_output = attention_mat[-1, 5-1:5+img_emb_len-1]
 
     return instruction_to_output, img_emb_to_output
 
