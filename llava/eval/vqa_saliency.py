@@ -197,15 +197,17 @@ def eval_model(args):
         q2o = []
         img2o = []
         whole2o = []
+        i2q = []
         for i in range(32):
             temp = get_saliency(saliency[i], split_sizes, img_emb_len, question_len)
             q2o.append(temp[0].sum().tolist())
             img2o.append(temp[1].sum().tolist())
             whole2o.append(temp[2].sum().tolist())
+            i2q.append(temp[3].sum().tolist())
 
             
         current_saliency = {'qid': idx, 'gt': label, 'pred': outputs, 'pred_prob': pred_prob, 'prior':ni_pred, 'qlen':question_len, 'ilen':img_emb_len,
-                            'gt_sal':{'q2o': q2o, 'i2o': img2o, 'w2o': whole2o,},
+                            'gt_sal':{'q2o': q2o, 'i2o': img2o, 'w2o': whole2o, 'i2q': i2q},
                             'prior_sal': {},
                             'false_pred_sal': {},
                             }
@@ -239,14 +241,16 @@ def eval_model(args):
             q2o = []
             img2o = []
             whole2o = []
+            i2q = []
             for i in range(32):
                 temp = get_saliency(saliency[i], split_sizes, img_emb_len, question_len)
                 q2o.append(temp[0].sum().tolist())
                 img2o.append(temp[1].sum().tolist())
                 whole2o.append(temp[2].sum().tolist())
+                i2q.append(temp[3].sum().tolist())
 
-            current_saliency.update({'prior_sal':{}, 'false_pred_sal': {'q2o': q2o, 'i2o': img2o, 'w2o': whole2o}})
-        elif ni_pred is not None:
+            current_saliency.update({'false_pred_sal': {'q2o': q2o, 'i2o': img2o, 'w2o': whole2o, 'i2q': i2q}})
+        if ni_pred is not None:
             if pred_tok.lower() != ni_pred.lower():
                 """
                 Pred correct
@@ -280,16 +284,15 @@ def eval_model(args):
                 q2o = []
                 img2o = []
                 whole2o = []
+                i2q = []
                 for i in range(32):
                     temp = get_saliency(saliency[i], split_sizes, img_emb_len, question_len)
                     q2o.append(temp[0].sum().tolist())
                     img2o.append(temp[1].sum().tolist())
                     whole2o.append(temp[2].sum().tolist())
-
+                    i2q.append(temp[3].sum().tolist())
                     
-                current_saliency.update({'prior_sal':{'q2o': q2o, 'i2o': img2o, 'w2o': whole2o}, 'false_pred_sal': {}})
-        else:
-            current_saliency.update({'prior_sal':{}, 'false_pred_sal': {}})
+                current_saliency.update({'prior_sal':{'q2o': q2o, 'i2o': img2o, 'w2o': whole2o, 'i2q': i2q}})
 
         #saliency_scores.append(current_saliency)
         out_file.write(json.dumps(current_saliency))
@@ -313,7 +316,9 @@ def get_saliency(attention_mat, split_sizes, img_emb_len, question_len):
 
     wholeseq_to_output = attention_mat[-1, :]
 
-    return instruction_to_output, img_emb_to_output, wholeseq_to_output
+    img_to_instruction = attention_mat[-8-question_len:-8, 5-1:5+img_emb_len-1]
+
+    return instruction_to_output, img_emb_to_output, wholeseq_to_output, img_to_instruction
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
