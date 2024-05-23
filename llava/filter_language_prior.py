@@ -51,6 +51,7 @@ def eval_model(args):
     ds = TensorDataset(question_ids.input_ids, question_ids.attention_mask, index)
     dl = DataLoader(ds, batch_size=8)
     output_probs = []
+    
     for batch in tqdm(dl, total=(len(dl))):
         input_ids, attention_mask, index = batch
         input_ids = input_ids.cuda()
@@ -72,11 +73,19 @@ def eval_model(args):
                 return_dict_in_generate=True,# CQ: add for attention map
             )
         
+
+
+        #transition_scores = model.compute_transition_scores(output_ids.sequences, output_ids.scores, normalize_logits=True)
+
         bs = input_ids.size(0)
-        scores = output_ids.scores
-        scores = torch.stack(scores, dim=1)
-        prob = F.softmax(scores, dim=-1)
-        top10 = torch.argsort(scores, -1, descending=True)[:,:,:10]
+        stack_score = torch.stack(output_ids.scores, dim=1)
+        for i in range(bs):
+            t = stack_score[i,:,:]
+            p =  F.softmax(t, dim=-1)
+            top10 = torch.argsort(t, 1, descending=True)[:, :10]
+            p_top10 = [tok_p[top10_id] for tok_p, top10_id in zip(p, top10)]
+            p_top10 = torch.stack(p_top10, 0)
+            output_probs.append([(tokenizer.decode(tok), probs, ids) for tok, probs, ids in zip(output_ids.sequences[i], p_top10, top10)])
 
         for i in range(bs):
 
